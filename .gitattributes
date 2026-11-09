@@ -1,0 +1,2 @@
+# Scripts run inside Linux/WSL: keep LF even when committed from Windows.
+* text=auto eol=lf
