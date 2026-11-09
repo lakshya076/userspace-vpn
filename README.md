@@ -247,7 +247,6 @@ uvpn/
   server.py       server: sessions, address pool, routing, anti-spoofing
 tests/            unit tests
 scripts/          netns end-to-end test
-docs/             project plan and architecture
 ```
 
 ## Security notes and limitations
@@ -265,7 +264,7 @@ This is a teaching project. It has not been audited, so do not rely on it to pro
 
 ## Roadmap
 
-[docs/PROJECT_PLAN.md](docs/PROJECT_PLAN.md) has the full architecture plan. Next steps include:
+Next steps include:
 
 - Per-peer static keys with a Noise-IK handshake, DoS cookies, and a post-quantum hybrid key exchange
 - Adaptive forward error correction for lossy Wi-Fi

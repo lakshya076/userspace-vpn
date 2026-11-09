@@ -26,6 +26,9 @@ psk
 Thumbs.db
 desktop.ini
 
+# Planning documents are kept local
+docs/
+
 # Office documents and their lock files (synopsis drafts stay out of the repo)
 *.docx
 ~$*
