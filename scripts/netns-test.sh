@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# End-to-end test on one Linux machine using network namespaces. Run as root.
+# End-to-end tests on one Linux machine using network namespaces. Run as root.
 #
 #   [uvpn-cli] 10.0.1.2 ---- 10.0.1.1 [uvpn-srv] 198.51.100.1 ---- 198.51.100.2 [uvpn-net]
 #    client                      server + NAT                       "the Internet"
@@ -8,67 +8,101 @@
 # client proves both the tunnel and the server's NAT work.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+source scripts/lab.sh
 
-PY=${PY:-python3}
-WORK=$(mktemp -d)
 MARKER="uvpn-plaintext-marker-$RANDOM$RANDOM"
-fail() { echo "FAIL: $*"; echo "--- server log"; cat "$WORK/server.log"; echo "--- client log"; cat "$WORK/client.log"; exit 1; }
+CLIENT=(client --server 10.0.1.1:51820 --psk-file "$WORK/psk")
+SERVER=(server --psk-file "$WORK/psk" --nat --out-iface srv-wan)
 
-cleanup() {
-    set +e
-    for pid in "${PIDS[@]:-}"; do kill "$pid" 2>/dev/null; done
-    wait 2>/dev/null
-    for ns in uvpn-cli uvpn-srv uvpn-net; do ip netns del "$ns" 2>/dev/null; done
-    rm -rf "$WORK"
+# Distinct first two bytes (version, type) of captured UDP payloads.
+header_variety() {
+    $PY - "$1" <<'EOF'
+import struct, sys
+data = open(sys.argv[1], "rb").read()
+pos, seen = 24, set()
+while pos + 16 <= len(data):
+    caplen = struct.unpack_from("<I", data, pos + 8)[0]
+    frame = data[pos + 16:pos + 16 + caplen]
+    seen.add(frame[14 + 20 + 8:14 + 20 + 8 + 2])  # Ethernet + IPv4 + UDP headers
+    pos += 16 + caplen
+print(len(seen))
+EOF
 }
-PIDS=()
-trap cleanup EXIT
 
-for ns in uvpn-cli uvpn-srv uvpn-net; do ip netns del "$ns" 2>/dev/null || true; ip netns add "$ns"; done
-ip link add cli-eth netns uvpn-cli type veth peer name srv-lan netns uvpn-srv
-ip link add srv-wan netns uvpn-srv type veth peer name net-eth netns uvpn-net
-ip -n uvpn-cli addr add 10.0.1.2/24 dev cli-eth
-ip -n uvpn-srv addr add 10.0.1.1/24 dev srv-lan
-ip -n uvpn-srv addr add 198.51.100.1/24 dev srv-wan
-ip -n uvpn-net addr add 198.51.100.2/24 dev net-eth
-for pair in uvpn-cli:cli-eth uvpn-srv:srv-lan uvpn-srv:srv-wan uvpn-net:net-eth; do
-    ip -n "${pair%%:*}" link set "${pair##*:}" up
-done
-for ns in uvpn-cli uvpn-srv uvpn-net; do ip -n "$ns" link set lo up; done
-ip -n uvpn-cli route add default via 10.0.1.1
-ip -n uvpn-srv route add default via 198.51.100.2
-
-$PY -m uvpn genpsk > "$WORK/psk" && chmod 600 "$WORK/psk"
-
-ip netns exec uvpn-srv $PY -m uvpn server --psk-file "$WORK/psk" --nat --out-iface srv-wan >"$WORK/server.log" 2>&1 &
-PIDS+=($!)
-sleep 1
-ip netns exec uvpn-srv tcpdump -i srv-lan -w "$WORK/lan.pcap" -U udp port 51820 >/dev/null 2>&1 &
-PIDS+=($!)
-ip netns exec uvpn-cli $PY -m uvpn client --server 10.0.1.1:51820 --psk-file "$WORK/psk" --route-all >"$WORK/client.log" 2>&1 &
-PIDS+=($!)
-
-for _ in $(seq 20); do grep -q "tunnel up" "$WORK/client.log" && break; sleep 0.5; done
-grep -q "tunnel up" "$WORK/client.log" || fail "client did not complete the handshake"
-echo "ok   handshake"
-
-ip netns exec uvpn-cli ping -c 3 -W 2 10.8.0.1 >/dev/null || fail "ping to server tunnel IP"
-echo "ok   ping server tunnel IP 10.8.0.1"
-
-ip netns exec uvpn-cli ping -c 3 -W 2 198.51.100.2 >/dev/null || fail "ping through NAT"
-echo "ok   ping 'Internet' host through tunnel + NAT"
-
-mkdir -p "$WORK/www" && echo "$MARKER" > "$WORK/www/index.html"
+lab_basic
+mkdir -p "$WORK/www" && echo "$MARKER" >"$WORK/www/index.html"
 ip netns exec uvpn-net $PY -m http.server 8080 --bind 198.51.100.2 --directory "$WORK/www" >/dev/null 2>&1 &
 PIDS+=($!)
-sleep 1
+
+echo "== basic tunnel"
+uvpn server uvpn-srv "${SERVER[@]}"
+wait_log server "listening" || fail "server did not start"
+ip netns exec uvpn-srv tcpdump -i srv-lan -w "$WORK/plain.pcap" -U udp port 51820 >/dev/null 2>&1 &
+TCPDUMP=$!
+uvpn client uvpn-cli "${CLIENT[@]}" --route-all
+wait_log client "tunnel up" || fail "client did not complete the handshake"
+ok "handshake"
+ip netns exec uvpn-cli ping -c 3 -W 2 10.8.0.1 >/dev/null || fail "ping to server tunnel IP"
+ok "ping server tunnel IP 10.8.0.1"
+ip netns exec uvpn-cli ping -c 3 -W 2 198.51.100.2 >/dev/null || fail "ping through NAT"
+ok "ping 'Internet' host through tunnel + NAT"
 body=$(ip netns exec uvpn-cli curl -s --max-time 5 http://198.51.100.2:8080/) || fail "HTTP through tunnel"
 [ "$body" = "$MARKER" ] || fail "HTTP body mismatch"
-echo "ok   HTTP (TCP) through tunnel"
-
+ok "HTTP (TCP) through tunnel"
 sleep 1
-if grep -qa "$MARKER" "$WORK/lan.pcap"; then fail "plaintext visible on the underlay"; fi
-[ -s "$WORK/lan.pcap" ] || fail "no tunnel packets captured"
-echo "ok   underlay capture holds no plaintext"
+kill "$TCPDUMP"; wait "$TCPDUMP" 2>/dev/null || true
+grep -qa "$MARKER" "$WORK/plain.pcap" && fail "plaintext visible on the underlay"
+ok "underlay capture holds no plaintext"
+
+ip netns exec uvpn-srv $PY -m uvpn status >"$WORK/status.txt" || fail "status command"
+grep -q "session .* 10.8.0.2" "$WORK/status.txt" || fail "status shows no session: $(cat "$WORK/status.txt")"
+ok "status command lists the session"
+
+echo "== roaming with path validation"
+ip -n uvpn-cli addr add 10.0.1.3/24 dev cli-eth
+ip -n uvpn-cli route replace 10.0.1.1 dev cli-eth src 10.0.1.3
+ip netns exec uvpn-cli ping -c 5 -i 0.3 -W 2 10.8.0.1 >/dev/null || fail "ping after address change"
+wait_log server "path validated" 5 || fail "server did not validate the new path"
+grep -q "PATH_CHALLENGE\|path_challenges" <(ip netns exec uvpn-srv $PY -m uvpn status --json) || fail "no challenge counted"
+ip netns exec uvpn-srv $PY -m uvpn status | grep -q "10.0.1.3:" || fail "server still sends to the old address"
+ok "server moved to 10.0.1.3 after a PATH_CHALLENGE / PATH_RESPONSE"
+ip -n uvpn-cli route replace 10.0.1.1 dev cli-eth
+stop client
+
+echo "== kill switch"
+uvpn client uvpn-cli "${CLIENT[@]}" --route-all --kill-switch
+wait_log client "tunnel up" || fail "kill-switch client handshake"
+ip netns exec uvpn-cli ping -c 2 -W 2 198.51.100.2 >/dev/null || fail "tunnel traffic blocked by kill switch"
+ok "tunnel traffic allowed"
+stop server
+ip netns exec uvpn-cli ping -c 2 -W 1 10.0.1.1 >/dev/null 2>&1 && fail "non-tunnel traffic leaked"
+ok "server gone: direct traffic is blocked, nothing leaks"
+ip netns exec uvpn-cli ip6tables -S OUTPUT | grep -q UVPN-KILLSWITCH || fail "no IPv6 block"
+ok "IPv6 blocked"
+stop client
+ip netns exec uvpn-cli iptables -S | grep -q UVPN-KILLSWITCH && fail "kill switch not removed on exit"
+ip netns exec uvpn-cli ping -c 2 -W 2 10.0.1.1 >/dev/null || fail "connectivity not restored"
+ok "rules removed on clean exit"
+
+echo "== obfuscation + FEC"
+uvpn server uvpn-srv "${SERVER[@]}" --obfs --fec adaptive
+wait_log server "listening" || fail "obfs server start"
+ip netns exec uvpn-srv tcpdump -i srv-lan -w "$WORK/obfs.pcap" -U udp port 51820 >/dev/null 2>&1 &
+TCPDUMP=$!
+uvpn client uvpn-cli "${CLIENT[@]}" --route-all --obfs --fec adaptive
+wait_log client "tunnel up" || fail "obfuscated handshake"
+body=$(ip netns exec uvpn-cli curl -s --max-time 5 http://198.51.100.2:8080/) || fail "HTTP with obfuscation"
+[ "$body" = "$MARKER" ] || fail "HTTP body mismatch with obfuscation"
+ip netns exec uvpn-cli ping -c 20 -i 0.05 -W 2 10.8.0.1 >/dev/null || fail "ping with obfuscation"
+sleep 1
+kill "$TCPDUMP"; wait "$TCPDUMP" 2>/dev/null || true
+plain=$(header_variety "$WORK/plain.pcap")
+masked=$(header_variety "$WORK/obfs.pcap")
+[ "$plain" -le 4 ] || fail "expected few distinct cleartext headers, got $plain"
+[ "$masked" -ge 20 ] || fail "obfuscated headers not random: $masked distinct"
+ok "header bytes: $plain distinct values in clear, $masked when obfuscated"
+uvpn plain_client uvpn-cli client --server 10.0.1.1:51820 --psk-file "$WORK/psk" --tun uvpn1
+wait_log plain_client "tunnel up" 6 && fail "an unobfuscated client got through to an obfuscated server"
+ok "unobfuscated client is ignored by an obfuscated server"
 
 echo "PASS"

@@ -60,6 +60,24 @@ class NetConfig:
             run("iptables", table_flag, table, "-I", chain, "1", *spec)
             self._undo.append(("iptables", table_flag, table, "-D", chain, *spec))
 
+    def kill_switch(self, tun_dev: str, server_ip: str, server_port: int) -> None:
+        """Block all outgoing traffic except the tunnel itself and loopback; block all IPv6.
+
+        The rules are removed on a clean exit. If the process dies they stay, so traffic
+        can never fall back to the unprotected route (fail closed).
+        """
+        chain = "UVPN-KILLSWITCH"
+        v4 = [("-o", "lo", "-j", "ACCEPT"), ("-o", tun_dev, "-j", "ACCEPT"),
+              ("-p", "udp", "-d", server_ip, "--dport", str(server_port), "-j", "ACCEPT"),
+              ("-j", "REJECT")]
+        v6 = [("-o", "lo", "-j", "ACCEPT"), ("-j", "REJECT")]  # IPv6 is not tunnelled: stop it leaking
+        for tool, rules in (("iptables", v4), ("ip6tables", v6)):
+            run(tool, "-N", chain)
+            for rule in rules:
+                run(tool, "-A", chain, *rule)
+            run(tool, "-I", "OUTPUT", "1", "-j", chain)
+            self._undo += [(tool, "-X", chain), (tool, "-F", chain), (tool, "-D", "OUTPUT", "-j", chain)]
+
     def cleanup(self) -> None:
         for cmd in reversed(self._undo):
             try:
