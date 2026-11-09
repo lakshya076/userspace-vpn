@@ -149,7 +149,11 @@ Copy `psk.key` to the client over a secure channel (for example `scp`). Never co
 sudo .venv/bin/python -m uvpn server --psk-file psk.key --nat
 ```
 
-This listens on UDP `0.0.0.0:51820` and creates `uvpn0` with `10.8.0.1/24`. `--nat` enables IP forwarding and NAT through the default-route interface. Allow UDP 51820 in any firewall in front of the server.
+This listens on UDP `0.0.0.0:51820` and creates `uvpn0` with `10.8.0.1/24`. `--nat` enables IP forwarding and NAT through the default-route interface. Allow UDP 51820 in any firewall in front of the server. With ufw, for LAN clients only:
+
+```bash
+sudo ufw allow from 192.168.1.0/24 to any port 51820 proto udp comment uvpn
+```
 
 ### 3. Start the client
 
