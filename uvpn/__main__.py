@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import binascii
 import glob
 import json
 import logging
@@ -23,8 +24,13 @@ def load_psk(path: str) -> bytes:
     mode = os.stat(path).st_mode
     if mode & (stat.S_IRWXG | stat.S_IRWXO):
         log.warning("%s is readable by other users; run: chmod 600 %s", path, path)
-    with open(path) as f:
-        psk = base64.b64decode(f.read().strip(), validate=True)
+    # utf-8-sig drops the BOM Windows editors add; split/join drops CRLF and wrapped lines from copy-paste.
+    with open(path, encoding="utf-8-sig") as f:
+        text = "".join(f.read().split())
+    try:
+        psk = base64.b64decode(text, validate=True)
+    except binascii.Error:
+        sys.exit(f"{path}: not a valid key; it must contain only the base64 line printed by 'uvpn genpsk'")
     if len(psk) != p.PSK_LEN:
         sys.exit(f"{path}: pre-shared key must be {p.PSK_LEN} bytes (base64)")
     return psk
