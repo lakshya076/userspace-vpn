@@ -72,10 +72,9 @@ fi
 
 # 5. Live UVPN Telemetry
 echo -e "\n${BOLD}[TEST 5/5] Live UVPN Cryptographic & Protocol Status...${RESET}"
-if [ -S "/tmp/uvpn.status/uvpn0.sock" ] || [ -d "/tmp/uvpn.status" ]; then
-    python3 -m uvpn status 2>/dev/null || sudo python3 -m uvpn status 2>/dev/null || true
-else
-    echo -e "  ${YELLOW}ℹ Status socket not active.${RESET}"
+# The status sockets live in /run/uvpn and are readable by root only.
+if ! python3 -m uvpn status 2>/dev/null && ! sudo python3 -m uvpn status 2>/dev/null; then
+    echo -e "  ${YELLOW}ℹ No status socket in /run/uvpn: is UVPN running?${RESET}"
 fi
 
 echo -e "\n${BOLD}${GREEN}============================================================${RESET}"

@@ -1,2 +1,4 @@
 # Scripts run inside Linux/WSL: keep LF even when committed from Windows.
 * text=auto eol=lf
+# cmd.exe misreads batch files with LF-only line endings.
+*.bat text eol=crlf

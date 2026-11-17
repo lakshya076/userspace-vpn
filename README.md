@@ -26,6 +26,7 @@ Author: Lakshya Saxena
 - [Protocol](#protocol)
 - [Requirements](#requirements)
 - [Quick start: client and server](#quick-start-client-and-server)
+- [Demo scripts](#demo-scripts)
 - [Connecting two computers directly (no server)](#connecting-two-computers-directly-no-server)
 - [Command reference](#command-reference)
 - [Testing](#testing)
@@ -243,6 +244,38 @@ sudo tcpdump -ni uvpn0                 # on the tunnel: readable inner packets
 
 Stop either side with Ctrl+C (SIGINT) or SIGTERM. The client sends `CLOSE`, and both sides remove their routes and firewall rules. After a `kill -9` the kill switch stays in force on purpose; remove it by hand with `sudo iptables -D OUTPUT -j UVPN-KILLSWITCH; sudo iptables -F UVPN-KILLSWITCH; sudo iptables -X UVPN-KILLSWITCH` (and the same with `ip6tables`).
 
+## Demo scripts
+
+One command per side for each setup, plus live monitors. Run them from the repository folder in WSL or Linux. Each script:
+
+- asks for `sudo` itself;
+- syncs the WSL clock;
+- checks for `cryptography` and `/dev/net/tun`;
+- prints a fingerprint of `psk.key` (never the key itself), so both sides can confirm they hold the same key.
+
+| Setup | Listening machine | Connecting machine | What uses the tunnel |
+|---|---|---|---|
+| Client/server (classic VPN) | `sudo bash scripts/client-server.sh server` | `sudo bash scripts/client-server.sh client SERVER_IP` | All of the client's IPv4 internet traffic; the server forwards it with NAT |
+| Peer-to-peer | `sudo bash scripts/p2p.sh listen` | `sudo bash scripts/p2p.sh connect PEER_A_IP` | Only traffic between the two peers, `10.8.0.1` and `10.8.0.2` |
+
+The listening side creates `psk.key` if it is missing. Copy that file to the connecting side before starting it there.
+
+Extra `uvpn` flags are passed through:
+- `--fec adaptive` and `--obfs`: give them to both sides;
+- `--kill-switch`: client only;
+- `--peer` and `--local-port`: hole punching, see [Case B](#case-b-different-networks-over-the-internet-udp-hole-punching). Run `bash scripts/p2p.sh stun` first to check the NAT type.
+
+Monitors run on either machine, each in its own terminal:
+
+| Command | Shows |
+|---|---|
+| `sudo bash scripts/monitor.sh stats` | `uvpn status` refreshed every second, with changes highlighted |
+| `sudo bash scripts/monitor.sh wire` | UDP 51820 on the real network: only encrypted bytes |
+| `sudo bash scripts/monitor.sh tunnel` | `uvpn0`: the same traffic before encryption |
+| `sudo bash scripts/monitor.sh check` | One-shot check: interface, ping, HTTP to `scripts/demo-web.py`, route, status |
+
+On a Windows laptop whose WSL must accept connections, double-click `scripts\windows-setup.bat` once; see step 2 below.
+
 ## Connecting two computers directly (no server)
 
 "Server" and "client" are only roles: one computer **listens**, the other **connects**. Two laptops can therefore build a private tunnel between themselves with no third machine. Below, **laptop A** listens and **laptop B** connects. The steps assume both are Windows laptops running UVPN inside WSL2 (Ubuntu); on native Linux, skip the WSL parts.
@@ -260,6 +293,8 @@ cd userspace-vpn
 ### Step 2: let laptop A accept connections (laptop A only)
 
 By default WSL sits behind its own NAT inside Windows, so it can connect out but cannot be reached. Laptop A needs **mirrored networking**, which gives WSL the same IP address as Windows (Windows 11 22H2 or newer). Laptop B can stay as it is.
+
+Shortcut: double-click `scripts\windows-setup.bat`. It asks for administrator rights, then does steps 1 and 3 below; it skips anything already set up and backs up an existing `.wslconfig`. You still need step 2 (`wsl --shutdown`) and step 4.
 
 1. Create or edit `C:\Users\<you>\.wslconfig`:
 
@@ -464,7 +499,8 @@ uvpn/
   client.py       client: handshake, rekey, keepalive and loss reports, reconnect, path responses
   server.py       server: sessions, address pool, routing, anti-spoofing, path validation, hole punching
 tests/            unit tests
-scripts/          network-namespace labs: end-to-end, peer-to-peer, FEC benchmark
+scripts/          demo launchers: client-server.sh, p2p.sh, monitor.sh, windows-setup.bat
+                  network-namespace labs: netns-test.sh, p2p-test.sh, fec-bench.sh
 ```
 
 ## Security notes and limitations
